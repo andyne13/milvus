@@ -62,7 +62,7 @@ func TestManifestIndexLegacyBaseRoundTrip(t *testing.T) {
 			segment := &datapb.SegmentInfo{ID: 3, CollectionID: 1, PartitionID: 2}
 			version := packed.ManifestEarliest
 			for _, buildID := range []int64{100, 200} {
-				manifest, err := packed.CommitManifestUpdates(base, version, cfg, &packed.ManifestUpdates{
+				manifest, err := packed.CommitManifestUpdates(packed.MarshalManifestPath(base, version), cfg, &packed.ManifestUpdates{
 					Indexes: []packed.ManifestIndexInfo{{
 						ColumnName: "vector", IndexName: "index", IndexType: "HNSW",
 						Path: fmt.Sprintf("%d/1", buildID), IndexID: buildID, BuildID: buildID,
@@ -216,14 +216,17 @@ func TestBuildManifestIndexInfoRespectsSegmentIndexTypeOverride(t *testing.T) {
 }
 
 func TestManifestIndexFileKeysRejectPathTraversal(t *testing.T) {
-	_, ok := manifestIndexFilePathInfo(3, packed.ManifestIndexInfo{
+	entry := packed.ManifestIndexInfo{
 		IndexName:             "index",
 		IndexType:             "HNSW",
 		Path:                  "index_v1/1/2/3/102/4",
 		IndexStorePathVersion: indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_COLLECTION_ROOTED,
-		IndexFileKeys:         []string{"../other-build/file"},
-	})
-	require.False(t, ok)
+	}
+	for _, key := range []string{"", ".", "..", "/absolute", "dir/file", "../other-build/file"} {
+		entry.IndexFileKeys = []string{key}
+		_, ok := manifestIndexFilePathInfo(3, entry)
+		require.False(t, ok, key)
+	}
 }
 
 // GetIndexInfos serves the load path from in-memory SegmentIndex metadata and
