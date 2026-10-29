@@ -353,3 +353,79 @@ including sub-fields added to an existing struct.
 - Struct fields in external collections; an external collection rejects
   every struct field, so element-nullable and nested Array sub-fields are not
   available there either.
+
+## Client APIs
+
+### REST v2
+
+- Schema: a struct sub-field takes `elementNullable` and, for an
+  `Array<Array<T>>` sub-field (`dataType: "Array"`,
+  `elementDataType: "Array"`), a `typeSchema` that mirrors the proto
+  `TypeSchema` (`leafType` / `arrayElement` / `typeParams` / `nullable`).
+  Every node sets exactly one of `leafType` and `arrayElement`; `leafType` is
+  a case-sensitive DataType name such as `Int64` or `VarChar`. REST fills the
+  inner array's `nullable` from `elementNullable` and rejects an explicit
+  value that differs. On create, REST fills the root `max_capacity` from the
+  struct; on `fields/add`, the server fills it from the sibling sub-fields.
+  A root `max_capacity` that differs from the struct's is rejected by the
+  server. A sub-field `nullable` may be given only when it equals the
+  struct's; omitted, it inherits. Describe prints `elementNullable` and
+  `typeSchema`, so a describe result can be sent back to create.
+- Writes: in a struct element object, a JSON `null` or a missing key of an
+  element-nullable sub-field is a null element; `null` on any other sub-field,
+  a `null` leaf of a nested sub-field whose leaf is not nullable, and
+  duplicate keys are rejected. Keys that name no sub-field, a dropped
+  sub-field included, are ignored, as in JSON and CSV import. These rules
+  apply to every struct field.
+- Output: null elements and null leaves are returned as `null`; vectors of an
+  element-nullable vector sub-field are returned at their logical positions,
+  with `null` for null elements; `Array<T>` values are converted recursively.
+  Each hit of an element-level search carries `"offset"`, the position of
+  the matched element in its row. Each row of an element-level query
+  (`element_filter`) carries `"offset": [..]`, the positions of its matched
+  elements; rows are not expanded. This applies to element-level search and
+  query on every struct field, including structs without element-nullable
+  sub-fields; responses of other requests do not change. Known limitation:
+  in these results the `offset` key overwrites a user field or dynamic field
+  named `offset`, and the `distance` key of a search hit likewise overwrites
+  a field named `distance`.
+
+### Go SDK
+
+- Schema: in an `entity.StructSchema`, a sub-field's `Nullable` maps to
+  `element_nullable` (row-level `nullable` comes from the struct), and
+  `Field.ElementNullable` marks the leaves of an `Array<T>` sub-field
+  (`DataType` Array with a scalar `ElementType`, stored as
+  `Array<Array<T>>`) as nullable. `Array<T>` sub-fields are sent with a
+  three-level `type_schema`; describe converts it back. Describe sets a
+  sub-field's `Nullable` from `element_nullable` as well, for every struct;
+  the struct's row nullability is on the struct field.
+- Capacity: on an `Array<T>` sub-field, `max_capacity` is the capacity of
+  each inner array and `max_length` that of a VarChar leaf. The struct
+  capacity comes from the struct field, or else from a sub-field that is not
+  an `Array<T>`.
+- Columns: element-nullable Array and VectorArray columns
+  (`NewElementNullableColumnXxxArray`, `NewElementNullableColumnXxxVectorArray`)
+  store compact values plus per-row element validity, like row-level nullable
+  columns; `WithRowValidData` adds row validity and `WithElementSparseMode`
+  takes values in the sparse form results use. An `Array<T>` sub-field uses
+  `NewColumnXxxArrayArray`, or `NewElementNullableColumnXxxArrayArray` with
+  inner-array and leaf validity. Row values for `AppendValue` and from `Get`
+  are `[]*T` with nil for a null scalar element, and a vector slice with nil
+  for a null vector element. For an `Array<T>` sub-field, `Get` returns
+  `[][]*T` when the leaves are nullable (nil for a null leaf) and `[][]T`
+  otherwise, with a nil inner slice for a null inner array; `AppendValue`
+  accepts both forms. A struct column fills an omitted element-nullable
+  sub-field with null elements and checks that all sub-fields of a row have
+  the same element count; a row that omits every sub-field is rejected,
+  since its element count is unknown. `column.ApplyStructSchema` marks the
+  element-nullable and leaf-nullable sub-columns of a struct column built
+  from rows.
+- Results: `ResultSet.ElementOffsets` holds one offset per hit of an
+  element-level search, the position of the matched element in its row (also
+  hybrid search and the search iterator); `ResultSet.QueryElementOffsets`
+  holds, per row of an element-level query, the positions of its matched
+  elements (also the query iterator). Both are set for every struct field,
+  including structs without element-nullable sub-fields. When the server
+  returns a different number of offsets than hits or rows, a search sets
+  `ResultSet.Err` and a query returns the error.
